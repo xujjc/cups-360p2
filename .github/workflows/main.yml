@@ -66,39 +66,39 @@ jobs:
         
         # 追加自定义配置（针对16M RAM优化）
         cat >> .config << 'EOF'
-# 基础系统配置
-CONFIG_TARGET_ROOTFS_SQUASHFS=y
-CONFIG_TARGET_ROOTFS_PARTSIZE=14336  # 14MB根文件系统（适合16M RAM）
+        # 基础系统配置
+        CONFIG_TARGET_ROOTFS_SQUASHFS=y
+        CONFIG_TARGET_ROOTFS_PARTSIZE=14336  # 14MB根文件系统（适合16M RAM）
 
-# 网络功能保留
-CONFIG_PACKAGE_ip-full=y
-CONFIG_PACKAGE_dhcpd=y
-CONFIG_PACKAGE_wpad-basic=y
-CONFIG_PACKAGE_iptables-nft=y
+        # 网络功能保留
+        CONFIG_PACKAGE_ip-full=y
+        CONFIG_PACKAGE_dhcpd=y
+        CONFIG_PACKAGE_wpad-basic=y
+        CONFIG_PACKAGE_iptables-nft=y
 
-# LUCI中文界面
-CONFIG_PACKAGE_luci=y
-CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-CONFIG_PACKAGE_luci-theme-bootstrap=y
+        # LUCI中文界面
+        CONFIG_PACKAGE_luci=y
+        CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+        CONFIG_PACKAGE_luci-theme-bootstrap=y
 
-# 打印机服务
-CONFIG_PACKAGE_cups=y
-CONFIG_PACKAGE_cups-lpd=y
-CONFIG_PACKAGE_cups-filters=y
-CONFIG_PACKAGE_p910nd=y
-CONFIG_PACKAGE_splix=y
-CONFIG_PACKAGE_avahi-daemon=y
-CONFIG_PACKAGE_kmod-usb-printer=y
-CONFIG_PACKAGE_kmod-usb-ohci=y
-CONFIG_PACKAGE_kmod-usb2=y
+        # 打印机服务
+        CONFIG_PACKAGE_cups=y
+        CONFIG_PACKAGE_cups-lpd=y
+        CONFIG_PACKAGE_cups-filters=y
+        CONFIG_PACKAGE_p910nd=y
+        CONFIG_PACKAGE_splix=y
+        CONFIG_PACKAGE_avahi-daemon=y
+        CONFIG_PACKAGE_kmod-usb-printer=y
+        CONFIG_PACKAGE_kmod-usb-ohci=y
+        CONFIG_PACKAGE_kmod-usb2=y
 
-# 优化内存占用（移除非必要组件）
-CONFIG_PACKAGE_firewall=n
-CONFIG_PACKAGE_dnsmasq=n
-CONFIG_PACKAGE_odhcpd=n
-CONFIG_PACKAGE_libstdcpp=n
-CONFIG_PACKAGE_libgomp=n
-EOF
+        # 优化内存占用（移除非必要组件）
+        CONFIG_PACKAGE_firewall=n
+        CONFIG_PACKAGE_dnsmasq=n
+        CONFIG_PACKAGE_odhcpd=n
+        CONFIG_PACKAGE_libstdcpp=n
+        CONFIG_PACKAGE_libgomp=n
+        EOF
         
         # 生成最终配置
         make defconfig
@@ -114,37 +114,37 @@ EOF
         # 优化CUPS配置（适合小内存）
         mkdir -p files/etc/cups
         cat > files/etc/cups/cupsd.conf << 'EOF'
-Port 631
-Listen localhost:631
-Browsing On
-BrowseLocalProtocols dnssd
-DefaultAuthType None
-WebInterface Yes
-SystemGroup lp
-EOF
+        Port 631
+        Listen localhost:631
+        Browsing On
+        BrowseLocalProtocols dnssd
+        DefaultAuthType None
+        WebInterface Yes
+        SystemGroup lp
+        EOF
         
         # 添加打印机服务发现（支持中文名称）
         mkdir -p files/etc/avahi/services
         cat > files/etc/avahi/services/ipp.service << 'EOF'
-<?xml version="1.0" standalone='no'?>
-<service-group>
-  <name replace-wildcards="yes">360P2 打印机</name>
-  <service>
-    <type>_ipp._tcp</type>
-    <subtype>_universal._sub._ipp._tcp</subtype>
-    <port>631</port>
-  </service>
-</service-group>
-EOF
+        <?xml version="1.0" standalone='no'?>
+        <service-group>
+          <name replace-wildcards="yes">360P2 打印机</name>
+          <service>
+            <type>_ipp._tcp</type>
+            <subtype>_universal._sub._ipp._tcp</subtype>
+            <port>631</port>
+          </service>
+        </service-group>
+        EOF
         
         # 添加佳能MF4452打印机支持（p910nd配置）
         mkdir -p files/etc/p910nd
         cat > files/etc/p910nd/mf4452.conf << 'EOF'
-# 佳能MF4452配置
-Model Canon MF4452
-Ports usb001
-Driver pxlmono
-EOF
+        # 佳能MF4452配置
+        Model Canon MF4452
+        Ports usb001
+        Driver pxlmono
+        EOF
 
     - name: 编译固件（优化内存使用）
       run: |
