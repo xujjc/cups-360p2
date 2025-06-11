@@ -1,4 +1,4 @@
-name: Build OpenWrt for 360P2 Printer Server
+name: Build OpenWrt for 360P2 (MT7628)
 
 on:
   workflow_dispatch:
@@ -18,192 +18,80 @@ jobs:
       with:
         path: openwrt-src
 
-    - name: 查找SDK目录
+    - name: 定位SDK目录
       id: find-sdk
       run: |
-        if [ -d "/builder" ]; then
-          echo "SDK_DIR=/builder" >> $GITHUB_ENV
-        elif [ -d "/sdk" ]; then
-          echo "SDK_DIR=/sdk" >> $GITHUB_ENV
-        elif [ -d "/openwrt" ]; then
-          echo "SDK_DIR=/openwrt" >> $GITHUB_ENV
-        else
-          echo "::error::无法找到SDK目录"
+        SDK_DIR="/builder"
+        if [ ! -d "$SDK_DIR" ]; then
+          echo "::error::SDK目录不存在: $SDK_DIR"
           ls -la /
           exit 1
         fi
-        echo "SDK_DIR=${{ env.SDK_DIR }}"
+        echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
 
     - name: 准备编译环境
       run: |
         cd ${{ env.SDK_DIR }}
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-        # 安装必要组件
-        ./scripts/feeds install python3-distutils zlib
 
-    - name: 深度修复配置文件
+    - name: 彻底修复choice默认值警告
       run: |
         cd ${{ env.SDK_DIR }}
-        export TERM=linux
-        
-        # 定位所有配置文件（递归查找）
-        CONFIG_FILES=$(find . -type f \( -name "Config-build.in" -o -name "config-build.in" \) | grep -vE "tmp|build_dir|staging_dir")
-        
-        if [ -z "$CONFIG_FILES" ]; then
-          echo "::error::未找到配置文件，尝试查找所有.in文件:"
-          find . -type f -name "*.in" | head -20
+        find . -name "*.in" -exec sed -i '/choice/,/endchoice/{
+          /^\s*default/d
+          /config\s\+[A-Z0-9_]\+$\s*default/s/\s*default.*//
+        }' {} \;
+        if grep -r "choice.*default" . --include="*.in" --exclude-dir={tmp,build_dir,staging_dir}; then
+          echo "::error::仍存在非法choice默认值"
           exit 1
         fi
-        
-        echo "找到配置文件: $CONFIG_FILES"
-        for file in $CONFIG_FILES; do
-          # 增强型修复规则（处理所有格式的default）
-          sed -i '/choice/,/endchoice/{
-            /^[ \t]*default[ \t]\+/d;
-            /^[ \t]*config[ \t]\+[^#]*/s/ *default[ \t]\+[^ \t]\+//g;
-            /^[ \t]*menuconfig[ \t]\+[^#]*/s/ *default[ \t]\+[^ \t]\+//g
-          }' "$file"
-          
-          # 验证修复（必须为0）
-          if grep -c "choice.*default" "$file" > /dev/null; then
-            echo "::error::文件 $file 仍有choice默认值"
-            exit 1
-          fi
-        done
-        echo "✓ 所有choice默认值已移除"
 
-    - name: 非交互式配置（严格禁用menuconfig）
+    - name: 配置目标设备
       run: |
         cd ${{ env.SDK_DIR }}
-        export TERM=linux
-        
-        # 清除所有配置文件
-        rm -f .config .config.old .menuconfig
-        
-        # 直接应用defconfig（避免任何交互式操作）
-        if [ -f "config/ramips/mt76x8/360p2_defconfig" ]; then
-          make ramips/mt76x8/360p2_defconfig
-        else
-          make ramips/mt76x8/hiwifi_hc5661a_defconfig
-        fi
-        
-        # 追加自定义配置（保留打印机功能）
+        make defconfig
         cat >> .config << 'EOF'
-        # 基础配置
         CONFIG_TARGET_ROOTFS_SQUASHFS=y
-        CONFIG_TARGET_ROOTFS_PARTSIZE=14336  # 14MB适合16M RAM
-
-        # 网络功能
-        CONFIG_PACKAGE_ip-full=y
-        CONFIG_PACKAGE_dhcpd=y
-        CONFIG_PACKAGE_wpad-basic=y
-        CONFIG_PACKAGE_iptables-nft=y
-
-        # LUCI中文界面
         CONFIG_PACKAGE_luci=y
         CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
-        CONFIG_PACKAGE_luci-theme-bootstrap=y
-
-        # 打印机服务
         CONFIG_PACKAGE_cups=y
-        CONFIG_PACKAGE_cups-lpd=y
-        CONFIG_PACKAGE_cups-filters=y
-        CONFIG_PACKAGE_p910nd=y
-        CONFIG_PACKAGE_splix=y
         CONFIG_PACKAGE_avahi-daemon=y
         CONFIG_PACKAGE_kmod-usb-printer=y
-        CONFIG_PACKAGE_kmod-usb-ohci=y
         CONFIG_PACKAGE_kmod-usb2=y
-
-        # 内存优化（移除非必要组件）
-        CONFIG_PACKAGE_firewall=n
-        CONFIG_PACKAGE_dnsmasq=n
-        CONFIG_PACKAGE_odhcpd=n
-        CONFIG_PACKAGE_libstdcpp=n
-        CONFIG_PACKAGE_libgomp=n
+        CONFIG_PACKAGE_dnsmasq=y
+        CONFIG_PACKAGE_firewall=y
         EOF
-        
-        # 生成最终配置（重定向输出避免交互式）
-        make defconfig > /dev/null 2>&1
-        if [ ! -f ".config" ]; then
-          echo "::error::配置生成失败"
-          exit 1
-        fi
-        echo "✓ 配置生成成功"
 
     - name: 自定义固件设置
       run: |
         cd ${{ env.SDK_DIR }}
-        export TERM=linux
-        
-        # 修改默认IP
         sed -i 's/192.168.1.1/192.168.2.1/g' package/base-files/files/bin/config_generate
-        
-        # 优化CUPS配置（小内存适配）
-        mkdir -p files/etc/cups
-        cat > files/etc/cups/cupsd.conf << 'EOF'
-        Port 631
-        Listen localhost:631
-        Browsing On
-        BrowseLocalProtocols dnssd
-        DefaultAuthType None
-        WebInterface Yes
-        SystemGroup lp
-        EOF
-        
-        # 添加打印机服务发现（中文名称）
         mkdir -p files/etc/avahi/services
-        cat > files/etc/avahi/services/ipp.service << 'EOF'
+        cat > files/etc/avahi/services/cups-ipp.service << 'EOF'
         <?xml version="1.0" standalone='no'?>
+        <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
         <service-group>
-          <name replace-wildcards="yes">360P2 打印机</name>
+          <name replace-wildcards="yes">%h打印机</name>
           <service>
             <type>_ipp._tcp</type>
-            <subtype>_universal._sub._ipp._tcp</subtype>
             <port>631</port>
+            <txt-record>rp=printers/Canon_MF4452</txt-record>
+            <txt-record>note=Canon MF4452 on 360P2</txt-record>
+            <txt-record>product=(Canon MF4452)</txt-record>
           </service>
         </service-group>
         EOF
-        
-        # 佳能MF4452专用配置
-        mkdir -p files/etc/p910nd
-        cat > files/etc/p910nd/mf4452.conf << 'EOF'
-        Model Canon MF4452
-        Ports usb001
-        Driver pxlmono
-        EOF
 
-    - name: 编译固件（分阶段优化）
+    - name: 编译固件
       run: |
         cd ${{ env.SDK_DIR }}
-        export TERM=linux
-        export FORCE_UNSAFE_CONFIGURE=1  # 强制非交互式编译
-        
-        echo "开始分阶段编译..."
-        # 阶段1：下载依赖
-        make -j$(nproc) download V=s
-        
-        # 阶段2：编译基础工具
-        make -j$(nproc) tools/install V=s
-        make -j$(nproc) toolchain/install V=s
-        
-        # 阶段3：编译核心包（先编译必要组件）
-        make -j$(nproc) package/base-files/install V=s
-        make -j$(nproc) package/luci/install V=s
-        make -j$(nproc) package/cups/install V=s
-        make -j$(nproc) package/avahi-daemon/install V=s
-        
-        # 阶段4：编译完整固件
-        make -j$(nproc) V=s || make -j1 V=s  # 失败时单线程编译
-        
-        # 检查固件生成
-        if [ -f "bin/ramips/*.sysupgrade.bin" ]; then
-          echo "固件生成成功:"
-          ls -la bin/ramips/*.sysupgrade.bin
-          du -sh bin/ramips/*.sysupgrade.bin  # 检查固件大小
-        else
-          echo "::error::固件未生成"
+        make -j$(nproc) V=s || {
+          make clean
+          make -j1 V=s
+        }
+        if [ ! -f "bin/ramips/openwrt-ramips-mt7628-360P2-squashfs-sysupgrade.bin" ]; then
+          echo "::error::固件生成失败"
           ls -la bin/ramips/
           exit 1
         fi
@@ -211,8 +99,5 @@ jobs:
     - name: 上传编译产物
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-360p2-printer
-        path: |
-          bin/ramips/*.sysupgrade.bin
-          bin/ramips/packages/*/cups_*.ipk
-          bin/ramips/packages/*/avahi-daemon_*.ipk
+        name: openwrt-360p2-firmware
+        path: bin/ramips/openwrt-ramips-mt7628-360P2-squashfs-sysupgrade.bin
