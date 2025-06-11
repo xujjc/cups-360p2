@@ -45,15 +45,17 @@ jobs:
       run: |
         cd ${{ env.SDK_DIR }}
         export TERM=linux
-        
-        # 查找所有可能的配置文件
-        echo "查找配置文件..."
-        CONFIG_FILES=$(find . -maxdepth 5 -type f \( -name "Config-build.in" -o -name "config-build.in" \))
-        
-        if [ -z "$CONFIG_FILES" ]; then
-          echo "::error::未找到任何配置文件"
-          find . -maxdepth 5 -type f | grep -i "config"
-          exit 1
+    
+        # 精确匹配choice作用域内的default
+        find . -name "*.in" -exec sed -i '/choice/,/endchoice/{
+        /^\s*default/d
+        /config\s\+[A-Z0-9_]\+$\s*default/s/\s*default.*//
+        }' {} \;
+
+        # 验证修复
+        if grep -r "choice.*default" . --include="*.in" --exclude-dir={tmp,build_dir,staging_dir}; then
+        echo "::error::仍存在非法choice默认值"
+        exit 1
         fi
         
         # 修复每个找到的配置文件
