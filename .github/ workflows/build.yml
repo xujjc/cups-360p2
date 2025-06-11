@@ -1,0 +1,114 @@
+name: Build Zero-Config Printer Firmware
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: openwrtorg/sdk:22.03.5-ramips-mt7628
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        scripts/feeds update -a
+        scripts/feeds install -a
+
+    - name: Configure .config
+      run: |
+        cat <<EOF > .config
+        # 基础平台配置
+        CONFIG_TARGET_ramips=y
+        CONFIG_TARGET_ramips_mt7628=y
+        CONFIG_TARGET_ramips_mt7628_DEVICE_360P2=y
+        
+        # 预配置服务
+        CONFIG_PACKAGE_cups=y
+        CONFIG_PACKAGE_cups-filters=y
+        CONFIG_PACKAGE_cups-daemon=y
+        CONFIG_PACKAGE_cups-bsd=y
+        CONFIG_PACKAGE_avahi=y
+        CONFIG_PACKAGE_avahi-daemon=y
+        CONFIG_PACKAGE_usb-printer=y
+        CONFIG_PACKAGE_p910nd=y
+        
+        # 中文界面
+        CONFIG_PACKAGE_luci=y
+        CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+        CONFIG_PACKAGE_luci-app-cups=y
+        CONFIG_PACKAGE_luci-i18n-cups-zh-cn=y
+        
+        # 优化配置
+        CONFIG_CCACHE=y
+        CONFIG_PACKAGE_kmod-usb-core=y
+        CONFIG_PACKAGE_kmod-usb2=y
+        CONFIG_PACKAGE_kmod-usb-printer=y
+        
+        # 禁用冗余功能
+        # CONFIG_PACKAGE_kmod-ledtrig-usbdev is not set
+        # CONFIG_PACKAGE_kmod-usb-ohci is not set
+        # CONFIG_PACKAGE_kmod-usb3 is not set
+        
+        # 系统配置
+        CONFIG_TARGET_ROOTFS_PARTSIZE=16
+        CONFIG_TARGET_ROOTFS_SQUASHFS=y
+        EOF
+
+    - name: Add pre-configuration scripts
+      run: |
+        mkdir -p files/etc/uci-defaults
+        cat <<'EOF' > files/etc/uci-defaults/99-printer-setup
+        #!/bin/sh
+        
+        # 配置CUPS
+        uci set cups.@global[0].listen='*:631'
+        uci set cups.@global[0].browsing='On'
+        uci set cups.@global[0].default_auth_type='None'
+        
+        # 配置Avahi
+        uci set avahi.daemon.enable_dbus='1'
+        uci set avahi.daemon.enable_reflector='1'
+        uci set avahi.daemon.allow_interfaces='lan'
+        
+        # 配置打印机（假设USB端口为lp0）
+        lpadmin -p Canon_MF4452 -E -v usb:/dev/usb/lp0 -m canon/mf4452.ppd
+        cupsaccept Canon_MF4452
+        cupsenable Canon_MF4452
+        
+        # 设置权限
+        chmod 755 /var/spool/cups
+        chown -R daemon:daemon /var/spool/cups
+        
+        # 清理
+        rm /etc/cups/cupsd.conf.original
+        rm /etc/avahi/avahi-daemon.conf.original
+        EOF
+        chmod +x files/etc/uci-defaults/99-printer-setup
+
+    - name: Make download
+      run: make download -j8
+
+    - name: Compile firmware
+      run: |
+        make -j$(nproc) || make -j1 V=s
+        
+        # 生成配置备份
+        tar -czvf config.tar.gz .config files/
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: zero-config-printer-firmware
+        path: |
+          bin/targets/ramips/mt7628/openwrt-*-360P2-squashfs-sysupgrade.bin
+          config.tar.gz
+
+    - name: Create release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: bin/targets/ramips/mt7628/openwrt-*-360P2-squashfs-sysupgrade.bin
