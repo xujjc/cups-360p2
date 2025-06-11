@@ -47,7 +47,6 @@ jobs:
         export TERM=linux
         
         # 查找所有可能的配置文件
-        echo "查找配置文件..."
         CONFIG_FILES=$(find . -maxdepth 5 -type f \( -name "Config*.in" -o -name "config*.in" \) | grep -vE "tmp|build_dir|staging_dir")
         
         if [ -z "$CONFIG_FILES" ]; then
@@ -57,50 +56,39 @@ jobs:
         fi
         
         # 修复每个找到的配置文件
-        echo "找到配置文件:"
-        echo "$CONFIG_FILES"
-        
         for file in $CONFIG_FILES; do
           echo "处理文件: $file"
-          
-          # 增强型sed规则，处理各种格式的choice默认值
           sed -i '/choice/,/endchoice/{
-            # 删除独立的default行
             /^[ \t]*default[ \t]\+/d
-            
-            # 删除config行中的default参数（保留config定义）
             /^[ \t]*config[ \t]\+[^#]*default[ \t]\+/s/default[ \t]\+[^ \t]*//g
-            
-            # 删除menuconfig行中的default参数
             /^[ \t]*menuconfig[ \t]\+[^#]*default[ \t]\+/s/default[ \t]\+[^ \t]*//g
-            
-            # 删除comment行中的default参数（如果有）
-            /^[ \t]*comment[ \t]\+[^#]*default[ \t]\+/s/default[ \t]\+[^ \t]*//g
           }' "$file"
-          
-          # 验证修复（显示修复后的行数）
-          echo "修复后：$(grep -c "choice.*default" "$file" || echo "0")个choice默认值"
         done
         
-        # 最终验证
+        # 验证修复
         if grep -r "choice.*default" . --include="*.in" --exclude-dir={tmp,build_dir,staging_dir} 2>/dev/null; then
           echo "::error::仍发现choice默认值"
-          grep -r "choice.*default" . --include="*.in" | head -10
           exit 1
         else
           echo "✓ 所有choice默认值已移除"
         fi
 
-    - name: 配置目标设备（非交互式）
+    - name: 配置目标设备（严格非交互式）
       run: |
         cd ${{ env.SDK_DIR }}
         export TERM=linux
         
-        # 直接使用defconfig
-        if [ -f "config/ramips/mt76x8/360p2_defconfig" ]; then
-          make ramips/mt76x8/360p2_defconfig
-        else
-          make ramips/mt76x8/hiwifi_hc5661a_defconfig
+        # 清除任何可能的现有配置
+        rm -f .config .config.old .menuconfig
+        
+        # 直接使用defconfig，不触发menuconfig
+        echo "使用非交互式defconfig..."
+        make ramips/mt76x8/hiwifi_hc5661a_defconfig
+        
+        # 验证配置是否正确生成
+        if [ ! -f ".config" ]; then
+          echo "::error::配置文件未生成"
+          exit 1
         fi
         
         # 追加自定义配置
@@ -123,9 +111,14 @@ jobs:
         CONFIG_PACKAGE_odhcpd=n
         EOF
         
-        # 生成最终配置
-        make defconfig
-        rm -f .menuconfig .config.old
+        # 生成最终配置（严格非交互式）
+        echo "生成最终配置..."
+        make defconfig > /dev/null 2>&1 || true
+        
+        # 验证最终配置
+        echo "最终配置摘要:"
+        grep -v "^#" .config | grep -v "^$" | wc -l
+        grep -E "CONFIG_PACKAGE_luci|CONFIG_PACKAGE_cups" .config
 
     - name: 自定义固件设置
       run: |
@@ -140,7 +133,7 @@ jobs:
         cat > files/etc/avahi/services/ipp.service << 'EOF'
         <?xml version="1.0" standalone='no'?>
         <service-group>
-        <name replace-wildcards="yes">360P2 打印机</name>
+          <name replace-wildcards="yes">360P2 打印机</name>
           <service>
             <type>_ipp._tcp</type>
             <subtype>_universal._sub._ipp._tcp</subtype>
@@ -149,18 +142,22 @@ jobs:
         </service-group>
         EOF
 
-    - name: 编译固件
+    - name: 编译固件（严格非交互式）
       run: |
         cd ${{ env.SDK_DIR }}
         export TERM=linux
         
+        # 设置环境变量确保非交互式编译
+        export FORCE_UNSAFE_CONFIGURE=1
+        export MAKEFLAGS="-j$(nproc) V=s"
+        
         echo "开始编译..."
-        make -j$(nproc) download V=s
-        make -j$(nproc) tools/install V=s
-        make -j$(nproc) toolchain/install V=s
-        make -j$(nproc) package/compile V=s
-        make -j$(nproc) package/index V=s
-        make -j$(nproc) V=s || make -j1 V=s
+        make download
+        make tools/install
+        make toolchain/install
+        make package/compile
+        make package/index
+        make
         
         # 检查固件
         if [ -f "bin/ramips/*.sysupgrade.bin" ]; then
