@@ -45,17 +45,15 @@ jobs:
       run: |
         cd ${{ env.SDK_DIR }}
         export TERM=linux
-    
-        # 精确匹配choice作用域内的default
-        find . -name "*.in" -exec sed -i '/choice/,/endchoice/{
-        /^\s*default/d
-        /config\s\+[A-Z0-9_]\+$\s*default/s/\s*default.*//
-        }' {} \;
-
-        # 验证修复
-        if grep -r "choice.*default" . --include="*.in" --exclude-dir={tmp,build_dir,staging_dir}; then
-        echo "::error::仍存在非法choice默认值"
-        exit 1
+        
+        # 查找所有可能的配置文件
+        echo "查找配置文件..."
+        CONFIG_FILES=$(find . -maxdepth 5 -type f \( -name "Config*.in" -o -name "config*.in" \) | grep -vE "tmp|build_dir|staging_dir")
+        
+        if [ -z "$CONFIG_FILES" ]; then
+          echo "::error::未找到任何配置文件"
+          find . -maxdepth 5 -type f | grep -i "config"
+          exit 1
         fi
         
         # 修复每个找到的配置文件
@@ -64,16 +62,33 @@ jobs:
         
         for file in $CONFIG_FILES; do
           echo "处理文件: $file"
-          sed -i '/choice/,/endchoice/{ /default/s/^\s*//; /default/d }' "$file"
-          sed -i '/choice/,/endchoice/{ /config.*default/s/ *default.*// }' "$file"
+          
+          # 增强型sed规则，处理各种格式的choice默认值
+          sed -i '/choice/,/endchoice/{
+            # 删除独立的default行
+            /^[ \t]*default[ \t]\+/d
+            
+            # 删除config行中的default参数（保留config定义）
+            /^[ \t]*config[ \t]\+[^#]*default[ \t]\+/s/default[ \t]\+[^ \t]*//g
+            
+            # 删除menuconfig行中的default参数
+            /^[ \t]*menuconfig[ \t]\+[^#]*default[ \t]\+/s/default[ \t]\+[^ \t]*//g
+            
+            # 删除comment行中的default参数（如果有）
+            /^[ \t]*comment[ \t]\+[^#]*default[ \t]\+/s/default[ \t]\+[^ \t]*//g
+          }' "$file"
+          
+          # 验证修复（显示修复后的行数）
+          echo "修复后：$(grep -c "choice.*default" "$file" || echo "0")个choice默认值"
         done
         
-        # 验证修复
+        # 最终验证
         if grep -r "choice.*default" . --include="*.in" --exclude-dir={tmp,build_dir,staging_dir} 2>/dev/null; then
           echo "::error::仍发现choice默认值"
+          grep -r "choice.*default" . --include="*.in" | head -10
           exit 1
         else
-          echo "✓ choice默认值修复完成"
+          echo "✓ 所有choice默认值已移除"
         fi
 
     - name: 配置目标设备（非交互式）
@@ -125,7 +140,7 @@ jobs:
         cat > files/etc/avahi/services/ipp.service << 'EOF'
         <?xml version="1.0" standalone='no'?>
         <service-group>
-          <name replace-wildcards="yes">360P2 打印机</name>
+        <name replace-wildcards="yes">360P2 打印机</name>
           <service>
             <type>_ipp._tcp</type>
             <subtype>_universal._sub._ipp._tcp</subtype>
