@@ -39,30 +39,36 @@ jobs:
         cd ${{ env.SDK_DIR }}
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-        # 安装必要组件
         ./scripts/feeds install python3-distutils zlib
 
     - name: 彻底修复choice默认值警告
       run: |
         cd ${{ env.SDK_DIR }}
-        export TERM=linux  # 提前设置终端变量
+        export TERM=linux
         
-        # 定位配置文件（兼容大小写）
-        CONFIG_FILE=$(find . -maxdepth 5 -name "Config-build.in" -o -name "config-build.in")
-        if [ -z "$CONFIG_FILE" ]; then
-          echo "::error::未找到Config-build.in文件"
+        # 查找所有可能的配置文件
+        echo "查找配置文件..."
+        CONFIG_FILES=$(find . -maxdepth 5 -type f \( -name "Config-build.in" -o -name "config-build.in" \))
+        
+        if [ -z "$CONFIG_FILES" ]; then
+          echo "::error::未找到任何配置文件"
           find . -maxdepth 5 -type f | grep -i "config"
           exit 1
         fi
         
-        echo "修复文件: $CONFIG_FILE"
-        # 移除所有choice块内的default
-        sed -i '/choice/,/endchoice/{ /default/s/^\s*//; /default/d }' "$CONFIG_FILE"
-        sed -i '/choice/,/endchoice/{ /config.*default/s/ *default.*// }' "$CONFIG_FILE"
+        # 修复每个找到的配置文件
+        echo "找到配置文件:"
+        echo "$CONFIG_FILES"
+        
+        for file in $CONFIG_FILES; do
+          echo "处理文件: $file"
+          sed -i '/choice/,/endchoice/{ /default/s/^\s*//; /default/d }' "$file"
+          sed -i '/choice/,/endchoice/{ /config.*default/s/ *default.*// }' "$file"
+        done
         
         # 验证修复
-        if grep -i "choice.*default" "$CONFIG_FILE"; then
-          echo "::error::仍发现choice默认值，请检查第11807行附近"
+        if grep -r "choice.*default" . --include="*.in" --exclude-dir={tmp,build_dir,staging_dir} 2>/dev/null; then
+          echo "::error::仍发现choice默认值"
           exit 1
         else
           echo "✓ choice默认值修复完成"
@@ -71,21 +77,21 @@ jobs:
     - name: 配置目标设备（非交互式）
       run: |
         cd ${{ env.SDK_DIR }}
-        export TERM=linux  # 确保终端变量生效
+        export TERM=linux
         
-        # 直接使用defconfig，避免触发menuconfig
+        # 直接使用defconfig
         if [ -f "config/ramips/mt76x8/360p2_defconfig" ]; then
           make ramips/mt76x8/360p2_defconfig
         else
           make ramips/mt76x8/hiwifi_hc5661a_defconfig
         fi
         
-        # 追加自定义配置（保留你的设置）
+        # 追加自定义配置
         cat >> .config << 'EOF'
         CONFIG_TARGET_ROOTFS_SQUASHFS=y
         CONFIG_PACKAGE_luci=y
         CONFIG_PACKAGE_luci-theme-bootstrap=y
-        CONFIG_PACKAGE_luci-i18n-base-zh-cn=y  # 中文支持
+        CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
         CONFIG_PACKAGE_wpad-basic=y
         CONFIG_PACKAGE_iptables-nft=y
         CONFIG_PACKAGE_cups=y
@@ -112,7 +118,7 @@ jobs:
         # 修改默认IP
         sed -i 's/192.168.1.1/192.168.2.1/g' package/base-files/files/bin/config_generate
         
-        # 添加打印机服务发现（中文名称）
+        # 添加打印机服务发现
         mkdir -p files/etc/avahi/services
         cat > files/etc/avahi/services/ipp.service << 'EOF'
         <?xml version="1.0" standalone='no'?>
@@ -126,20 +132,20 @@ jobs:
         </service-group>
         EOF
 
-    - name: 编译固件（带详细日志）
+    - name: 编译固件
       run: |
         cd ${{ env.SDK_DIR }}
-        export TERM=linux  # 关键：确保终端变量在编译时生效
+        export TERM=linux
         
-        echo "开始编译（禁用交互式界面）..."
+        echo "开始编译..."
         make -j$(nproc) download V=s
         make -j$(nproc) tools/install V=s
         make -j$(nproc) toolchain/install V=s
         make -j$(nproc) package/compile V=s
         make -j$(nproc) package/index V=s
-        make -j$(nproc) V=s || make -j1 V=s  # 失败时单线程编译
+        make -j$(nproc) V=s || make -j1 V=s
         
-        # 检查固件生成
+        # 检查固件
         if [ -f "bin/ramips/*.sysupgrade.bin" ]; then
           echo "固件生成成功"
           ls -la bin/ramips/*.sysupgrade.bin
