@@ -107,7 +107,7 @@ jobs:
         make -j$(nproc) V=s  # 使用多核加速编译
 
     - name: 上传固件
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: openwrt-360p2-printer
         path: openwrt/bin/targets/ramips/mt7628/openwrt-*-ramips-mt7628-360p2-squashfs-sysupgrade.bin
