@@ -47,23 +47,27 @@ jobs:
         CONFIG_PACKAGE_avahi-daemon=y
         CONFIG_PACKAGE_luci-app-cups=y
         
-        # 禁用冲突包
-        CONFIG_PACKAGE_kexec-tools=n
-        CONFIG_PACKAGE_lldpd=n
-        CONFIG_PACKAGE_policycoreutils=n
-        
-        # 精简配置
+        # 最小化系统配置
         CONFIG_PACKAGE_luci-theme-bootstrap=y
         CONFIG_PACKAGE_wireless-regdb=y
         CONFIG_PACKAGE_ppp=y
         CONFIG_PACKAGE_ppp-mod-pppoe=y
+        
+        # 禁用所有潜在冲突包
+        CONFIG_PACKAGE_kmod-usb-storage=n
+        CONFIG_PACKAGE_samba36-server=n
+        CONFIG_PACKAGE_miniupnpd=n
+        CONFIG_PACKAGE_audit=n
+        CONFIG_PACKAGE_policycoreutils=n
+        CONFIG_PACKAGE_lldpd=n
+        CONFIG_PACKAGE_kexec-tools=n
         EOF
 
     - name: 🔍 Validate Config
       run: |
         cd openwrt
         make defconfig
-        grep CONFIG_PACKAGE_kexec-tools .config  # 应返回 =n
+        grep CONFIG_PACKAGE_audit .config  # 应返回 =n
 
     - name: 🔄 Update Feeds
       run: |
