@@ -1,126 +1,78 @@
-name: Build OpenWrt for 360P2 Printer
+name: 360P2 Basic Printer Firmware
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240
-
     steps:
-    - name: Checkout code
+    - name: 📥 Checkout Code
       uses: actions/checkout@v4
 
-    - name: Setup environment
+    - name: 🔧 Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y build-essential ccache ecj fastjar file g++ gawk \
-        gettext git java-propose-classpath libelf-dev libncurses5-dev \
-        libncursesw5-dev libssl-dev python3 unzip wget \
-        python3-venv python3-setuptools rsync subversion swig time \
-        xsltproc zlib1g-dev python3-dev
-        
-        # 创建4GB交换空间
-        sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
-        free -m
+        sudo apt-get install -y build-essential libncurses5-dev gawk git gettext \
+        subversion mercurial cmake python3-distutils rsync
 
-    - name: Clone OpenWrt source
-      run: |
-        git clone https://github.com/openwrt/openwrt.git --depth=1 --branch v22.03.5
-        cd openwrt
-        echo "当前OpenWrt版本: $(git describe --tags)"
-        
-        # 修复可能的权限问题
-        chmod -R 755 .
+    - name: 📂 Clone OpenWrt Source
+      run: git clone --depth 1 https://git.openwrt.org/openwrt/openwrt.git
 
-    - name: Configure build
+    - name: ⚙️ Configure Firmware
       run: |
         cd openwrt
-        
-        # 创建最小配置确保编译通过
-        cat > .config << 'EOF'
+        cat > .config << EOF
+        # 硬件配置
         CONFIG_TARGET_ramips=y
-        CONFIG_TARGET_ramips_mt76x8=y
-        CONFIG_TARGET_ramips_mt76x8_DEVICE_360_p2=y
-
-        # 基本系统组件
-        CONFIG_PACKAGE_block-mount=y
-        CONFIG_PACKAGE_fstools=y
-
-        # 必需工具
-        CONFIG_BUSYBOX_CUSTOM=y
-        CONFIG_BUSYBOX_CONFIG_FEATURE_TOP_SMP_CPU=y
-        CONFIG_BUSYBOX_CONFIG_FEATURE_TOP_DECIMALS=y
-
-        # 空间优化 (16MB闪存)
-        CONFIG_TARGET_ROOTFS_SQUASHFS=y
-        CONFIG_PACKAGE_luci-app-firewall=n
-        CONFIG_PACKAGE_luci-app-upnp=n
-        CONFIG_PACKAGE_ppp=n
-        CONFIG_PACKAGE_ppp-mod-pppoe=n
+        CONFIG_TARGET_ramips_mt7628=y
+        CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y
+        CONFIG_TARGET_ROOTFS_PARTSIZE=14
+        
+        # 核心网络功能
+        CONFIG_PACKAGE_dnsmasq=y
+        CONFIG_PACKAGE_firewall=y
+        CONFIG_PACKAGE_opkg=y
+        CONFIG_PACKAGE_wpad-basic-wolfssl=y
+        
+        # 打印服务（基础框架）
+        CONFIG_PACKAGE_cups=y
+        CONFIG_PACKAGE_cups-filters=y
+        CONFIG_PACKAGE_avahi-daemon=y
+        CONFIG_PACKAGE_luci-app-cups=y
+        
+        # 精简配置
+        CONFIG_PACKAGE_luci-theme-bootstrap=y
+        CONFIG_PACKAGE_wireless-regdb=y
+        CONFIG_PACKAGE_ppp=y
+        CONFIG_PACKAGE_ppp-mod-pppoe=y
+        
+        # 禁用非必要组件
+        CONFIG_PACKAGE_kmod-usb-storage=n
+        CONFIG_PACKAGE_samba36-server=n
+        CONFIG_PACKAGE_miniupnpd=n
         EOF
-        
-        # 初始配置
-        make defconfig
-        
-        # 添加打印机组件
+
+    - name: 🔄 Update Feeds
+      run: |
+        cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
-        
-        # 逐个添加关键包
-        echo "CONFIG_PACKAGE_luci=y" >> .config
-        echo "CONFIG_PACKAGE_cups=y" >> .config
-        echo "CONFIG_PACKAGE_gutenprint=y" >> .config
-        echo "CONFIG_PACKAGE_avahi-daemon=y" >> .config
-        
-        # 更新配置
-        make defconfig
-        
-        # 手动检查配置
-        echo "检查配置:"
-        grep "CONFIG_TARGET" .config
-        grep "CONFIG_PACKAGE" .config
 
-    - name: Build firmware (single thread)
+    - name: 🛠️ Compile Firmware
       run: |
         cd openwrt
-        
-        # 分步编译确保生成固件
-        make tools/install -j1 V=sc 2>&1 | tee step1.log
-        make toolchain/install -j1 V=sc 2>&1 | tee step2.log
-        make target/compile -j1 V=sc 2>&1 | tee step3.log
-        make package/compile -j1 V=sc 2>&1 | tee step4.log
-        make package/install -j1 V=sc 2>&1 | tee step5.log
-        make target/install -j1 V=sc 2>&1 | tee step6.log
-        
-        # 关键：生成固件
-        make -j1 V=sc 2>&1 | tee final.log
-        
-        # 检查固件是否生成
-        if [ -f bin/targets/ramips/mt76x8/*.bin ]; then
-          echo "固件生成成功!"
-          ls -lh bin/targets/ramips/mt76x8/
-        else
-          echo "错误：没有生成固件文件"
-          exit 1
-        fi
+        make download -j8
+        make -j$(nproc) || make -j1 V=s
 
-    - name: Upload artifacts
-      if: success()
+    - name: ✅ Verify Build
+      run: |
+        ls -l openwrt/bin/targets/ramips/mt7628/*.bin
+        echo "✅ 编译成功！固件大小："
+        du -h openwrt/bin/targets/ramips/mt7628/*.bin
+
+    - name: 🚀 Upload Firmware
       uses: actions/upload-artifact@v4
       with:
-        name: openwrt-360p2-printer
-        path: openwrt/bin/targets/ramips/mt76x8/*.bin
-
-    - name: Upload logs on failure
-      if: failure()
-      uses: actions/upload-artifact@v4
-      with:
-        name: build-logs
-        path: openwrt/*.log
+        name: 360P2-Base-Printer-Firmware
+        path: openwrt/bin/targets/ramips/mt7628/*.bin
