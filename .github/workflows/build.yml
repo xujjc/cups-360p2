@@ -31,7 +31,7 @@ jobs:
         cat > .config << EOF
         # 硬件配置
         CONFIG_TARGET_ramips=y
-        CONFIG_TARGET_ramips_mt7628=y
+        CONFIG_TARGET_ramips_mt76x8=y
         CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y
         CONFIG_TARGET_ROOTFS_PARTSIZE=14
         
@@ -85,13 +85,13 @@ jobs:
     - name: 🔍 Verify Output Path
       run: |
         cd openwrt
-        find bin/targets/ramips/mt7628/ -name "*.bin"
+        find bin/targets/ramips/mt76x8/ -name "*.bin"
 
     - name: ✅ Verify Build
-      run: ls -l openwrt/bin/targets/ramips/mt7628/*.bin
+      run: ls -l openwrt/bin/targets/ramips/mt76x8/*.bin
 
     - name: 🚀 Upload Firmware
       uses: actions/upload-artifact@v4
       with:
         name: 360P2-Printer-Firmware
-        path: openwrt/bin/targets/ramips/mt7628/*.bin
+        path: openwrt/bin/targets/ramips/mt76x8/*.bin
