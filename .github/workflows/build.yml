@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 240  # 增加超时时间
+    timeout-minutes: 240
 
     steps:
     - name: Checkout code
@@ -22,106 +22,105 @@ jobs:
         libncursesw5-dev libssl-dev python3 unzip wget \
         python3-venv python3-setuptools rsync subversion swig time \
         xsltproc zlib1g-dev python3-dev
-
-        # 确保有足够的交换空间
-        sudo fallocate -l 4G /swapfile
+        
+        # 创建4GB交换空间
+        sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
         sudo chmod 600 /swapfile
         sudo mkswap /swapfile
         sudo swapon /swapfile
+        free -m
 
     - name: Clone OpenWrt source
       run: |
         git clone https://github.com/openwrt/openwrt.git --depth=1 --branch v22.03.5
         cd openwrt
-        git log -1  # 显示当前版本
+        echo "当前OpenWrt版本: $(git describe --tags)"
+        
+        # 修复可能的权限问题
+        chmod -R 755 .
 
     - name: Configure build
       run: |
         cd openwrt
         
-        # 创建基本配置文件
-        cat > .config << EOF
+        # 创建最小配置确保编译通过
+        cat > .config << 'EOF'
         CONFIG_TARGET_ramips=y
         CONFIG_TARGET_ramips_mt76x8=y
         CONFIG_TARGET_ramips_mt76x8_DEVICE_360_p2=y
 
-        # 中文支持
-        CONFIG_PACKAGE_luci=y
-        CONFIG_LUCI_LANG_zh-cn=y
-        CONFIG_PACKAGE_luci-i18n-base-zh-cn=y
+        # 基本系统组件
+        CONFIG_PACKAGE_block-mount=y
+        CONFIG_PACKAGE_fstools=y
 
-        # CUPS 打印机服务器
-        CONFIG_PACKAGE_cups=y
-        CONFIG_PACKAGE_cups-filters=y
-        CONFIG_PACKAGE_luci-app-cups=y
-        CONFIG_PACKAGE_luci-i18n-cups-zh-cn=y
+        # 必需工具
+        CONFIG_BUSYBOX_CUSTOM=y
+        CONFIG_BUSYBOX_CONFIG_FEATURE_TOP_SMP_CPU=y
+        CONFIG_BUSYBOX_CONFIG_FEATURE_TOP_DECIMALS=y
 
-        # 打印机驱动 (佳能 MF4452)
-        CONFIG_PACKAGE_gutenprint=y
-        CONFIG_PACKAGE_gutenprint-ppds=y
-        CONFIG_PACKAGE_kmod-usb-printer=y
-
-        # Avahi 零配置网络
-        CONFIG_PACKAGE_avahi-daemon-service-http=y
-        CONFIG_PACKAGE_avahi-daemon-service-ipp=y
-        CONFIG_PACKAGE_avahi-nodbus-daemon=y
-        CONFIG_PACKAGE_libavahi-client=y
-
-        # 网络基础功能
-        CONFIG_PACKAGE_dnsmasq-full=y
-        CONFIG_PACKAGE_iptables-mod-extra=y
-
-        # 空间优化 (16MB 闪存)
+        # 空间优化 (16MB闪存)
+        CONFIG_TARGET_ROOTFS_SQUASHFS=y
+        CONFIG_PACKAGE_luci-app-firewall=n
         CONFIG_PACKAGE_luci-app-upnp=n
-        CONFIG_PACKAGE_luci-app-ddns=n
         CONFIG_PACKAGE_ppp=n
         CONFIG_PACKAGE_ppp-mod-pppoe=n
-        CONFIG_PACKAGE_luci-app-firewall=n
-
-        # 编译优化
-        CONFIG_BUILD_LOG=y
-        CONFIG_CCACHE=y
-        CONFIG_DEVEL=y
         EOF
-
-        # 安装 feeds
+        
+        # 初始配置
+        make defconfig
+        
+        # 添加打印机组件
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
-        # 应用配置并检查
+        # 逐个添加关键包
+        echo "CONFIG_PACKAGE_luci=y" >> .config
+        echo "CONFIG_PACKAGE_cups=y" >> .config
+        echo "CONFIG_PACKAGE_gutenprint=y" >> .config
+        echo "CONFIG_PACKAGE_avahi-daemon=y" >> .config
+        
+        # 更新配置
         make defconfig
-        make menuconfig -t  # 文本模式检查配置
+        
+        # 手动检查配置
+        echo "检查配置:"
+        grep "CONFIG_TARGET" .config
+        grep "CONFIG_PACKAGE" .config
 
-    - name: Build firmware
+    - name: Build firmware (single thread)
       run: |
         cd openwrt
         
-        # 分步编译，便于调试
-        make -j2 tools/compile V=s 2>&1 | tee build-step1.log
-        make -j2 toolchain/compile V=s 2>&1 | tee build-step2.log
-        make -j2 target/compile V=s 2>&1 | tee build-step3.log
-        make -j2 package/compile V=s 2>&1 | tee build-step4.log
-        make -j2 package/index V=s 2>&1 | tee build-step5.log
+        # 分步编译确保生成固件
+        make tools/install -j1 V=sc 2>&1 | tee step1.log
+        make toolchain/install -j1 V=sc 2>&1 | tee step2.log
+        make target/compile -j1 V=sc 2>&1 | tee step3.log
+        make package/compile -j1 V=sc 2>&1 | tee step4.log
+        make package/install -j1 V=sc 2>&1 | tee step5.log
+        make target/install -j1 V=sc 2>&1 | tee step6.log
         
-        # 最终镜像编译
-        make -j2 V=s 2>&1 | tee build-final.log
+        # 关键：生成固件
+        make -j1 V=sc 2>&1 | tee final.log
+        
+        # 检查固件是否生成
+        if [ -f bin/targets/ramips/mt76x8/*.bin ]; then
+          echo "固件生成成功!"
+          ls -lh bin/targets/ramips/mt76x8/
+        else
+          echo "错误：没有生成固件文件"
+          exit 1
+        fi
 
     - name: Upload artifacts
       if: success()
       uses: actions/upload-artifact@v4
       with:
         name: openwrt-360p2-printer
-        path: openwrt/bin/targets/ramips/mt76x8/
+        path: openwrt/bin/targets/ramips/mt76x8/*.bin
 
-    - name: Upload build logs
+    - name: Upload logs on failure
       if: failure()
       uses: actions/upload-artifact@v4
       with:
         name: build-logs
-        path: |
-          openwrt/build-step1.log
-          openwrt/build-step2.log
-          openwrt/build-step3.log
-          openwrt/build-step4.log
-          openwrt/build-step5.log
-          openwrt/build-final.log
+        path: openwrt/*.log
