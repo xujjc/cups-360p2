@@ -29,8 +29,11 @@ jobs:
 
     - name: Clone OpenWrt source
       run: |
-        git clone https://github.com/openwrt/openwrt.git --depth=1 --branch openwrt-22.03.5
+        git clone https://github.com/openwrt/openwrt.git --depth=1
         cd openwrt
+        git checkout v22.03.5
+
+
 
     - name: Configure build
       run: |
