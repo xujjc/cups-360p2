@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 180
+    timeout-minutes: 240  # 增加超时时间
 
     steps:
     - name: Checkout code
@@ -21,26 +21,25 @@ jobs:
         gettext git java-propose-classpath libelf-dev libncurses5-dev \
         libncursesw5-dev libssl-dev python3 unzip wget \
         python3-venv python3-setuptools rsync subversion swig time \
-        xsltproc zlib1g-dev
+        xsltproc zlib1g-dev python3-dev
 
-        # 安装 distutils 的替代方案
-        sudo apt-get install -y python3-distutils-extra || echo "使用内置distutils"
-        python3 -c "import distutils; print('distutils available')"
+        # 确保有足够的交换空间
+        sudo fallocate -l 4G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
 
     - name: Clone OpenWrt source
       run: |
-        # 克隆主分支
-        git clone https://github.com/openwrt/openwrt.git --depth=1
+        git clone https://github.com/openwrt/openwrt.git --depth=1 --branch v22.03.5
         cd openwrt
-        
-        # 切换到 22.03.5 标签
-        git fetch --tags
-        git checkout v22.03.5
-
+        git log -1  # 显示当前版本
 
     - name: Configure build
       run: |
         cd openwrt
+        
+        # 创建基本配置文件
         cat > .config << EOF
         CONFIG_TARGET_ramips=y
         CONFIG_TARGET_ramips_mt76x8=y
@@ -79,23 +78,50 @@ jobs:
         CONFIG_PACKAGE_ppp-mod-pppoe=n
         CONFIG_PACKAGE_luci-app-firewall=n
 
-        # 添加以下配置以避免常见错误
+        # 编译优化
         CONFIG_BUILD_LOG=y
         CONFIG_CCACHE=y
+        CONFIG_DEVEL=y
         EOF
 
         # 安装 feeds
         ./scripts/feeds update -a
         ./scripts/feeds install -a
+        
+        # 应用配置并检查
         make defconfig
+        make menuconfig -t  # 文本模式检查配置
 
     - name: Build firmware
       run: |
         cd openwrt
-        make -j$(nproc) V=s
+        
+        # 分步编译，便于调试
+        make -j2 tools/compile V=s 2>&1 | tee build-step1.log
+        make -j2 toolchain/compile V=s 2>&1 | tee build-step2.log
+        make -j2 target/compile V=s 2>&1 | tee build-step3.log
+        make -j2 package/compile V=s 2>&1 | tee build-step4.log
+        make -j2 package/index V=s 2>&1 | tee build-step5.log
+        
+        # 最终镜像编译
+        make -j2 V=s 2>&1 | tee build-final.log
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
+    - name: Upload artifacts
+      if: success()
+      uses: actions/upload-artifact@v3
       with:
         name: openwrt-360p2-printer
         path: openwrt/bin/targets/ramips/mt76x8/
+
+    - name: Upload build logs
+      if: failure()
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-logs
+        path: |
+          openwrt/build-step1.log
+          openwrt/build-step2.log
+          openwrt/build-step3.log
+          openwrt/build-step4.log
+          openwrt/build-step5.log
+          openwrt/build-final.log
