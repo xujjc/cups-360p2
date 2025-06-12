@@ -9,7 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     container:
-      image: openwrtorg/sdk:21.02-snapshot  # 使用官方SDK镜像加速编译
+      image: openwrt/sdk:21.02-snapshot  # 使用官方SDK镜像加速编译
 
     steps:
     - name: Checkout代码
