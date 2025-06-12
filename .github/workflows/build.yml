@@ -29,10 +29,13 @@ jobs:
 
     - name: Clone OpenWrt source
       run: |
+        # 克隆主分支
         git clone https://github.com/openwrt/openwrt.git --depth=1
         cd openwrt
+        
+        # 切换到 22.03.5 标签
+        git fetch --tags
         git checkout v22.03.5
-
 
 
     - name: Configure build
@@ -75,6 +78,10 @@ jobs:
         CONFIG_PACKAGE_ppp=n
         CONFIG_PACKAGE_ppp-mod-pppoe=n
         CONFIG_PACKAGE_luci-app-firewall=n
+
+        # 添加以下配置以避免常见错误
+        CONFIG_BUILD_LOG=y
+        CONFIG_CCACHE=y
         EOF
 
         # 安装 feeds
