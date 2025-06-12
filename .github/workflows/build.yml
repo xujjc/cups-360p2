@@ -20,7 +20,7 @@ jobs:
       run: |
         sudo rm -rf /usr/local/lib/android
         sudo rm -rf /usr/share/dotnet
-        df -h  # 显示清理后的磁盘空间
+        df -h
 
     - name: 📂 Clone OpenWrt Source
       run: git clone --depth 1 https://git.openwrt.org/openwrt/openwrt.git
@@ -47,23 +47,23 @@ jobs:
         CONFIG_PACKAGE_avahi-daemon=y
         CONFIG_PACKAGE_luci-app-cups=y
         
+        # 禁用冲突包
+        CONFIG_PACKAGE_kexec-tools=n
+        CONFIG_PACKAGE_lldpd=n
+        CONFIG_PACKAGE_policycoreutils=n
+        
         # 精简配置
         CONFIG_PACKAGE_luci-theme-bootstrap=y
         CONFIG_PACKAGE_wireless-regdb=y
         CONFIG_PACKAGE_ppp=y
         CONFIG_PACKAGE_ppp-mod-pppoe=y
-        
-        # 禁用非必要组件
-        CONFIG_PACKAGE_kmod-usb-storage=n
-        CONFIG_PACKAGE_samba36-server=n
-        CONFIG_PACKAGE_miniupnpd=n
         EOF
 
     - name: 🔍 Validate Config
       run: |
         cd openwrt
         make defconfig
-        grep CONFIG_TARGET_ramips_mt7628 .config  # 验证芯片型号配置
+        grep CONFIG_PACKAGE_kexec-tools .config  # 应返回 =n
 
     - name: 🔄 Update Feeds
       run: |
@@ -74,20 +74,17 @@ jobs:
     - name: 🛠️ Compile Firmware
       run: |
         cd openwrt
-        export MAKEFLAGS="-j1 V=s"  # 单线程详细日志
+        export MAKEFLAGS="-j1 V=s"
         make download
         make
 
     - name: 🔍 Verify Output Path
       run: |
         cd openwrt
-        echo "📂 当前工作目录: $(pwd)"
-        echo "🔍 查找固件文件:"
         find bin/targets/ramips/mt7628/ -name "*.bin"
 
     - name: ✅ Verify Build
-      run: |
-        ls -l openwrt/bin/targets/ramips/mt7628/*.bin || echo "❌ 未找到固件文件"
+      run: ls -l openwrt/bin/targets/ramips/mt7628/*.bin
 
     - name: 🚀 Upload Firmware
       uses: actions/upload-artifact@v4
