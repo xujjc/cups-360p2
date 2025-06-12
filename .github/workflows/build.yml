@@ -108,7 +108,7 @@ jobs:
 
     - name: Upload artifacts
       if: success()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: openwrt-360p2-printer
         path: openwrt/bin/targets/ramips/mt76x8/
