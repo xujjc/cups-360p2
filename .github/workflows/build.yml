@@ -1,4 +1,4 @@
-name: 360P2 Printer Firmware Builder
+name: 360P2 Printer Firmware Builder with Local CUPS Build
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       printer_ip:
         description: 'Printer IP Address (e.g., 192.168.1.100)'
         required: true
-        default: '192.168.2.1'
+        default: '192.168.1.100'
       web_admin_user:
         description: 'Web Admin Username'
         required: true
@@ -14,7 +14,7 @@ on:
       web_admin_pass:
         description: 'Web Admin Password'
         required: true
-        default: 'admin'
+        default: 'openwrt'
 
 jobs:
   build:
@@ -27,7 +27,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential libncurses5-dev gawk git gettext \
-        subversion mercurial cmake python3-distutils rsync unzip
+        subversion mercurial cmake python3-distutils rsync unzip wget
         sudo apt-get clean
         sudo rm -rf /var/lib/apt/lists/*
         
@@ -43,20 +43,30 @@ jobs:
         git clone --depth 1 https://git.openwrt.org/openwrt/openwrt.git
         cd openwrt
         git fetch --tags
-        git checkout v23.05.2  # 使用稳定版本
+        git checkout v23.05.2  # 使用最新稳定版
+
+    - name: 🛠️ Fix Recursive Dependency
+      run: |
+        cd openwrt
+        # 移除CUPS对python3-pymysql的依赖
+        sed -i '/select PACKAGE_python3-pymysql/d' package/feeds/packages/cups/Config.in
+        sed -i '/depends on PACKAGE_python3-pymysql/d' package/feeds/packages/cups/Config.in
+        
+        # 删除有问题的python包
+        rm -rf feeds/packages/lang/python/pymysql
+        rm -rf feeds/packages/lang/python/python3-pymysql
 
     - name: ⚙️ Configure Firmware
       run: |
         cd openwrt
         
-        # 创建干净的.config文件
+        # 创建最小化配置
         cat > .config << 'EOF'
         # 硬件配置
         CONFIG_TARGET_ramips=y
         CONFIG_TARGET_ramips_mt76x8=y
         CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y
-        # 增加分区大小
-        CONFIG_TARGET_ROOTFS_PARTSIZE=16
+        CONFIG_TARGET_ROOTFS_PARTSIZE=24  # 增加分区大小
         
         # 核心网络功能
         CONFIG_PACKAGE_dnsmasq=y
@@ -73,37 +83,57 @@ jobs:
         CONFIG_PACKAGE_libjpeg=y
         CONFIG_PACKAGE_libpng=y
         
-        # 禁用不必要组件
-        CONFIG_PACKAGE_cups-ppdc=n
-        CONFIG_PACKAGE_ghostscript=n
-        CONFIG_PACKAGE_gutenprint=n
-        CONFIG_PACKAGE_foomatic-filters=n
-        
-        # Web界面增强
-        CONFIG_PACKAGE_luci-base=y  # 仅安装基础LUCI
-        CONFIG_PACKAGE_luci-app-cups=y
-                
         # 系统基础组件
-        CONFIG_PACKAGE_luci-theme-bootstrap=y
-        CONFIG_PACKAGE_wireless-regdb=y
-        CONFIG_PACKAGE_ppp=y
-        CONFIG_PACKAGE_ppp-mod-pppoe=y
         CONFIG_PACKAGE_block-mount=y
         CONFIG_PACKAGE_fdisk=y
+        CONFIG_PACKAGE_kmod-usb-core=y
+        CONFIG_PACKAGE_kmod-usb2=y
+        CONFIG_PACKAGE_kmod-usb-ohci=y
         
-        # 禁用冲突包和问题包
+        # 禁用冲突包
         CONFIG_PACKAGE_kmod-usb-storage=n
         CONFIG_PACKAGE_samba4-server=n
         CONFIG_PACKAGE_miniupnpd=n
-        CONFIG_PACKAGE_audit=n
-        CONFIG_PACKAGE_policycoreutils=n
-        CONFIG_PACKAGE_lldpd=n
-        CONFIG_PACKAGE_kexec-tools=n
-        CONFIG_PACKAGE_python3-pymysql=n
-        CONFIG_PACKAGE_python3=n  # 完全禁用Python3
-        CONFIG_PACKAGE_luci-app-dockerman=n
-        CONFIG_PACKAGE_luci-app-adblock=n
+        CONFIG_PACKAGE_python3=n
+        CONFIG_PACKAGE_python3-base=n
         EOF
+
+    - name: 🔄 Update Feeds
+      run: |
+        cd openwrt
+        ./scripts/feeds update -a
+        ./scripts/feeds install -a
+        
+        # 安装必要的基础包
+        ./scripts/feeds install libcups libusb cups cups-www
+
+    - name: 🔨 Build CUPS Packages
+      run: |
+        cd openwrt
+        # 准备编译环境
+        make defconfig
+        make tools/install
+        make toolchain/install
+        
+        # 单独编译CUPS及其依赖
+        make package/libcups/compile -j$(nproc) V=s
+        make package/cups/compile -j$(nproc) V=s
+        make package/cups-www/compile -j$(nproc) V=s
+        make package/cups-filters/compile -j$(nproc) V=s
+        make package/cups-bjnp/compile -j$(nproc) V=s
+        make package/kmod-usb-printer/compile -j$(nproc) V=s
+        
+        # 创建包目录
+        mkdir -p bin/packages/mipsel_24kc/base/
+        
+        # 复制编译好的包
+        find bin/packages/ -name "cups*.ipk" -exec cp {} bin/packages/mipsel_24kc/base/ \;
+        find bin/packages/ -name "libcups*.ipk" -exec cp {} bin/packages/mipsel_24kc/base/ \;
+        find bin/packages/ -name "kmod-usb-printer*.ipk" -exec cp {} bin/packages/mipsel_24kc/base/ \;
+        
+        # 创建包索引
+        ./scripts/ipkg-make-index.sh bin/packages/mipsel_24kc/base/ > bin/packages/mipsel_24kc/base/Packages
+        gzip -9c bin/packages/mipsel_24kc/base/Packages > bin/packages/mipsel_24kc/base/Packages.gz
 
     - name: 🖨️ Add Printer Support Files
       run: |
@@ -154,6 +184,10 @@ jobs:
         # 等待网络就绪
         sleep 15
         
+        # 安装CUPS包
+        opkg update
+        opkg install /tmp/cups-packages/*.ipk
+
         # 设置打印机
         lpadmin -p Canon_MF4452 \
           -E \
@@ -186,6 +220,12 @@ jobs:
         EOF
         chmod +x files/etc/uci-defaults/99-setup-printer
         
+        # 创建CUPS包存储目录
+        mkdir -p files/tmp/cups-packages/
+        
+        # 复制编译好的包到固件中
+        cp bin/packages/mipsel_24kc/base/*.ipk files/tmp/cups-packages/
+        
         # CUPS Web界面配置
         mkdir -p files/etc/cups/
         cat > files/etc/cups/cupsd.conf << 'EOF'
@@ -214,20 +254,8 @@ jobs:
           Require user @SYSTEM @ADMIN
         </Location>
         
-        <Location /admin/conf>
-          AuthType Basic
-          AuthClass System
-          AuthGroupName system
-          Require user @SYSTEM @ADMIN
-          Order allow,deny
-          Allow 192.168.0.0/16
-        </Location>
-        
         <Policy admin>
           Require user @SYSTEM @ADMIN
-        </Policy>
-        
-          Require user @OWNER @SYSTEM
         </Policy>
         EOF
         
@@ -236,69 +264,18 @@ jobs:
         SystemGroup root
         EOF
 
-    - name: 🔧 Fix Recursive Dependencies
+    - name: 🔧 Finalize Config
       run: |
         cd openwrt
-        # 彻底删除问题包及其依赖
-        sed -i '/CONFIG_PACKAGE_python3-pymysql/d' .config
-        sed -i '/CONFIG_PYTHON3_PYMYSQL_SHA_PASSWORD_SUPPORT/d' .config
+        # 禁用CUPS编译（因为我们已经预编译了）
+        sed -i 's/CONFIG_PACKAGE_cups=y/CONFIG_PACKAGE_cups=n/' .config
+        sed -i 's/CONFIG_PACKAGE_cups-www=y/CONFIG_PACKAGE_cups-www/n/' .config
+        sed -i 's/CONFIG_PACKAGE_cups-filters=y/CONFIG_PACKAGE_cups-filters=n/' .config
+        sed -i 's/CONFIG_PACKAGE_cups-bjnp=y/CONFIG_PACKAGE_cups-bjnp=n/' .config
+        sed -i 's/CONFIG_PACKAGE_kmod-usb-printer=y/CONFIG_PACKAGE_kmod-usb-printer=n/' .config
         
-        # 完全禁用Python3
-        echo "CONFIG_PACKAGE_python3=n" >> .config
-        echo "CONFIG_PACKAGE_python3-base=n" >> .config
-        
-        # 强制启用CUPS
-        echo "CONFIG_PACKAGE_cups=y" >> .config
-        echo "CONFIG_PACKAGE_cups-www=y" >> .config
-
-    - name: 🔄 Update Feeds
-      run: |
-        cd openwrt
-        ./scripts/feeds update -a
-        
-        # 仅安装必要包，避免触发依赖问题
-        ./scripts/feeds install -a -d y -p packages cups cups-www
-        ./scripts/feeds install -a -d y -p luci luci-app-cups
-        ./scripts/feeds install -a -d y libcups libusb
-
-    - name: 🔍 Validate Config
-      run: |
-        cd openwrt
-        # 清理无效依赖警告
-        sed -i '/^WARNING:/d' .config || true
-        
-        # 修复格式问题
-        sed -i 's/  #.*//' .config || true
-        
-        # 确保关键配置存在
-        echo "CONFIG_PACKAGE_cups=y" >> .config
-        echo "CONFIG_PACKAGE_cups-www=y" >> .config
-        echo "CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y" >> .config
-        
-        # 显示当前配置
-        echo "=== Current Configuration ==="
-        cat .config | grep -v "^#" | grep -v "^$"
-        
-        # 运行defconfig
+        # 确保配置正确
         make defconfig
-        
-        # 验证关键配置
-        if ! grep -q "CONFIG_PACKAGE_cups=y" .config; then
-          echo "::error::CUPS not enabled"
-          exit 1
-        fi
-        if ! grep -q "CONFIG_PACKAGE_cups-www=y" .config; then
-          echo "::error::CUPS Web not enabled"
-          exit 1
-        fi
-        if ! grep -q "CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y" .config; then
-          echo "::error::Device not set to 360p2"
-          exit 1
-        fi
-        
-        echo "=== Key Configurations ==="
-        grep "CONFIG_TARGET" .config | grep -v "=n"
-        grep "CONFIG_PACKAGE_cups" .config
 
     - name: 🛠️ Compile Firmware
       run: |
@@ -306,10 +283,10 @@ jobs:
         export FORCE_UNSAFE_CONFIGURE=1
         
         # 修复下载问题
-        make download -j8
+        make download -j$(nproc)
         
-        # 并行编译但限制资源使用
-        make -j$(($(nproc)/2)) V=s
+        # 并行编译
+        make -j$(($(nproc) + 1)) V=s
         
         # 检查构建结果
         if [ ! -d bin/targets/ramips/mt76x8 ]; then
@@ -325,11 +302,12 @@ jobs:
         echo "firmware_name=$FIRMWARE_FILE" >> $GITHUB_ENV
         
         # 创建Web访问信息文件
-        LAN_IP="192.168.2.1"  # 默认路由器IP
+        LAN_IP="192.168.1.1"  # 默认路由器IP
         echo "CUPS Web Interface: http://$LAN_IP:631" > web-access.txt
         echo "Username: ${{ github.event.inputs.web_admin_user}}" >> web-access.txt
         echo "Password: ${{ github.event.inputs.web_admin_pass}}" >> web-access.txt
         echo "Printer IP: ${{ github.event.inputs.printer_ip}}" >> web-access.txt
+        echo "Note: CUPS will be installed on first boot" >> web-access.txt
 
     - name: 🚀 Upload Firmware
       uses: actions/upload-artifact@v4
