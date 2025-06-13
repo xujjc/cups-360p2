@@ -82,7 +82,7 @@ jobs:
         # Web界面增强
         CONFIG_PACKAGE_luci-base=y  # 仅安装基础LUCI
         CONFIG_PACKAGE_luci-app-cups=y
-        
+                
         # 系统基础组件
         CONFIG_PACKAGE_luci-theme-bootstrap=y
         CONFIG_PACKAGE_wireless-regdb=y
@@ -99,7 +99,8 @@ jobs:
         CONFIG_PACKAGE_policycoreutils=n
         CONFIG_PACKAGE_lldpd=n
         CONFIG_PACKAGE_kexec-tools=n
-        CONFIG_PACKAGE_python3-pymysql=n  # 显式禁用问题包
+        CONFIG_PACKAGE_python3-pymysql=n
+        CONFIG_PACKAGE_python3=n  # 完全禁用Python3
         CONFIG_PACKAGE_luci-app-dockerman=n
         CONFIG_PACKAGE_luci-app-adblock=n
         EOF
@@ -141,7 +142,7 @@ jobs:
         *DefaultInputSlot: Auto
         *InputSlot Auto/Automatic: "<</ManualFeed false>>"
         *InputSlot Tray1/Tray 1: "<</MediaPosition 1>>"
-                
+        
         *cupsFilter: "application/vnd.cups-postscript 0 -"
         EOF
         
@@ -226,7 +227,6 @@ jobs:
           Require user @SYSTEM @ADMIN
         </Policy>
         
-        <Policy default>
           Require user @OWNER @SYSTEM
         </Policy>
         EOF
@@ -236,26 +236,30 @@ jobs:
         SystemGroup root
         EOF
 
+    - name: 🔧 Fix Recursive Dependencies
+      run: |
+        cd openwrt
+        # 彻底删除问题包及其依赖
+        sed -i '/CONFIG_PACKAGE_python3-pymysql/d' .config
+        sed -i '/CONFIG_PYTHON3_PYMYSQL_SHA_PASSWORD_SUPPORT/d' .config
+        
+        # 完全禁用Python3
+        echo "CONFIG_PACKAGE_python3=n" >> .config
+        echo "CONFIG_PACKAGE_python3-base=n" >> .config
+        
+        # 强制启用CUPS
+        echo "CONFIG_PACKAGE_cups=y" >> .config
+        echo "CONFIG_PACKAGE_cups-www=y" >> .config
+
     - name: 🔄 Update Feeds
       run: |
         cd openwrt
         ./scripts/feeds update -a
-        ./scripts/feeds install -a
         
-        # 仅安装必要包
-        ./scripts/feeds install libcups libusb cups cups-www luci-app-cups
-
-    - name: 🛠️ Fix Recursive Dependencies
-      run: |
-        cd openwrt
-        # 显式禁用问题包
-        echo "CONFIG_PACKAGE_python3-pymysql=n" >> .config
-        echo "CONFIG_PACKAGE_python3-pymysql-sha-password=n" >> .config
-        echo "CONFIG_PACKAGE_python3-pymysql_sha_password_support=n" >> .config
-        
-        # 清理无效配置
-        sed -i '/^CONFIG_PACKAGE_python3-pymysql/d' .config
-        sed -i '/^CONFIG_PYTHON3_PYMYSQL_SHA_PASSWORD_SUPPORT/d' .config
+        # 仅安装必要包，避免触发依赖问题
+        ./scripts/feeds install -a -d y -p packages cups cups-www
+        ./scripts/feeds install -a -d y -p luci luci-app-cups
+        ./scripts/feeds install -a -d y libcups libusb
 
     - name: 🔍 Validate Config
       run: |
@@ -271,18 +275,30 @@ jobs:
         echo "CONFIG_PACKAGE_cups-www=y" >> .config
         echo "CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y" >> .config
         
+        # 显示当前配置
+        echo "=== Current Configuration ==="
+        cat .config | grep -v "^#" | grep -v "^$"
+        
+        # 运行defconfig
         make defconfig
         
         # 验证关键配置
-        grep "CONFIG_PACKAGE_cups=y" .config || echo "::error::CUPS not enabled" && exit 1
-        grep "CONFIG_PACKAGE_cups-www=y" .config || echo "::error::CUPS Web not enabled" && exit 1
-        grep "CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y" .config || echo "::error::Device not set to 360p2" && exit 1
+        if ! grep -q "CONFIG_PACKAGE_cups=y" .config; then
+          echo "::error::CUPS not enabled"
+          exit 1
+        fi
+        if ! grep -q "CONFIG_PACKAGE_cups-www=y" .config; then
+          echo "::error::CUPS Web not enabled"
+          exit 1
+        fi
+        if ! grep -q "CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y" .config; then
+          echo "::error::Device not set to 360p2"
+          exit 1
+        fi
         
-        # 显示关键配置
         echo "=== Key Configurations ==="
         grep "CONFIG_TARGET" .config | grep -v "=n"
         grep "CONFIG_PACKAGE_cups" .config
-        grep "CONFIG_TARGET_ramips_mt7628_DEVICE" .config
 
     - name: 🛠️ Compile Firmware
       run: |
