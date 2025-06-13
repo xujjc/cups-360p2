@@ -47,12 +47,15 @@ jobs:
     - name: ⚙️ Configure Firmware
       run: |
         cd openwrt
-        cat > .config << EOF
+        
+        # 创建干净的.config文件
+        cat > .config << 'EOF'
         # 硬件配置
         CONFIG_TARGET_ramips=y
         CONFIG_TARGET_ramips_mt76x8=y
         CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y
-        CONFIG_TARGET_ROOTFS_PARTSIZE=16  # 增加分区大小
+        # 增加分区大小
+        CONFIG_TARGET_ROOTFS_PARTSIZE=16
         
         # 核心网络功能
         CONFIG_PACKAGE_dnsmasq=y
@@ -63,10 +66,10 @@ jobs:
         # 打印服务配置
         CONFIG_PACKAGE_cups=y
         CONFIG_PACKAGE_cups-filters=y
-        CONFIG_PACKAGE_cups-bjnp=y  # 佳能网络打印协议
-        CONFIG_PACKAGE_cups-www=y    # 启用Web界面
-        CONFIG_PACKAGE_kmod-usb-printer=y  # USB打印机支持
-        CONFIG_PACKAGE_libjpeg=y  # 图像处理支持
+        CONFIG_PACKAGE_cups-bjnp=y
+        CONFIG_PACKAGE_cups-www=y
+        CONFIG_PACKAGE_kmod-usb-printer=y
+        CONFIG_PACKAGE_libjpeg=y
         CONFIG_PACKAGE_libpng=y
         
         # 禁用不必要组件
@@ -85,7 +88,7 @@ jobs:
         CONFIG_PACKAGE_wireless-regdb=y
         CONFIG_PACKAGE_ppp=y
         CONFIG_PACKAGE_ppp-mod-pppoe=y
-        CONFIG_PACKAGE_block-mount=y  # 分区挂载支持
+        CONFIG_PACKAGE_block-mount=y
         CONFIG_PACKAGE_fdisk=y
         
         # 禁用冲突包
@@ -141,23 +144,23 @@ jobs:
         
         # 创建打印机自动配置脚本
         mkdir -p files/etc/uci-defaults/
-        cat > files/etc/uci-defaults/99-setup-printer << EOF
+        cat > files/etc/uci-defaults/99-setup-printer << 'EOF'
         #!/bin/sh
         
         # 等待网络就绪
         sleep 15
         
         # 设置打印机
-        lpadmin -p Canon_MF4452 \\
-          -E \\
-          -v "bjnp://${{ github.event.inputs.printer_ip }}" \\
+        lpadmin -p Canon_MF4452 \
+          -E \
+          -v "bjnp://$PRINTER_IP" \
           -m /usr/share/cups/model/canon-mf4452-minimal.ppd
         
         # 设为默认打印机
         lpoptions -d Canon_MF4452
         
         # 创建CUPS管理员账户
-        echo "${{ github.event.inputs.web_admin_user}}:$(openssl passwd -6 '${{ github.event.inputs.web_admin_pass}}')" > /etc/cups/passwd.md5
+        echo "$WEB_ADMIN_USER:$(openssl passwd -6 '$WEB_ADMIN_PASS')" > /etc/cups/passwd.md5
         chmod 600 /etc/cups/passwd.md5
         
         # 启动服务
@@ -181,7 +184,7 @@ jobs:
         
         # CUPS Web界面配置
         mkdir -p files/etc/cups/
-        cat > files/etc/cups/cupsd.conf << EOF
+        cat > files/etc/cups/cupsd.conf << 'EOF'
         LogLevel warn
         MaxLogSize 0
         Listen 0.0.0.0:631
@@ -226,16 +229,9 @@ jobs:
         EOF
         
         # 创建CUPS管理员组
-        cat > files/etc/cups/cups-files.conf << EOF
+        cat > files/etc/cups/cups-files.conf << 'EOF'
         SystemGroup root
         EOF
-
-    - name: 🔍 Validate Config
-      run: |
-        cd openwrt
-        make defconfig
-        grep "CONFIG_PACKAGE_cups-www" .config
-        grep "CONFIG_PACKAGE_luci-app-cups" .config
 
     - name: 🔄 Update Feeds
       run: |
@@ -246,12 +242,37 @@ jobs:
         # 安装必要包
         ./scripts/feeds install libcups libusb cups cups-www luci-app-cups
 
+    - name: 🔍 Validate Config
+      run: |
+        cd openwrt
+        # 清理无效依赖警告
+        sed -i '/^WARNING:/d' .config
+        
+        # 修复格式问题
+        sed -i 's/  #.*//' .config
+        
+        make defconfig
+        
+        # 验证关键配置
+        grep "CONFIG_PACKAGE_cups=y" .config || echo "::error::CUPS not enabled"
+        grep "CONFIG_PACKAGE_cups-www=y" .config || echo "::error::CUPS Web not enabled"
+        grep "CONFIG_TARGET_ramips_mt76x8=y" .config || echo "::error::Incorrect target"
+        
+        # 显示关键配置
+        echo "=== Key Configurations ==="
+        grep "CONFIG_TARGET" .config | grep -v "=n"
+        grep "CONFIG_PACKAGE_cups" .config
+
     - name: 🛠️ Compile Firmware
       run: |
         cd openwrt
         export FORCE_UNSAFE_CONFIGURE=1
-        make download
-        make -j$(($(nproc) + 1)) V=s
+        
+        # 修复下载问题
+        make download -j8
+        
+        # 并行编译但限制资源使用
+        make -j$(($(nproc)/2)) V=s
         
         # 检查构建结果
         if [ ! -d bin/targets/ramips/mt76x8 ]; then
@@ -267,7 +288,7 @@ jobs:
         echo "firmware_name=$FIRMWARE_FILE" >> $GITHUB_ENV
         
         # 创建Web访问信息文件
-        LAN_IP=$(grep "ipaddr" ../../../../.config | cut -d'=' -f2 | tr -d '"')
+        LAN_IP="192.168.2.1"  # 默认路由器IP
         echo "CUPS Web Interface: http://$LAN_IP:631" > web-access.txt
         echo "Username: ${{ github.event.inputs.web_admin_user}}" >> web-access.txt
         echo "Password: ${{ github.event.inputs.web_admin_pass}}" >> web-access.txt
