@@ -6,7 +6,7 @@ on:
       printer_ip:
         description: 'Printer IP Address (e.g., 192.168.1.100)'
         required: true
-        default: '192.168.1.100'
+        default: '192.168.2.1'
       web_admin_user:
         description: 'Web Admin Username'
         required: true
@@ -14,7 +14,7 @@ on:
       web_admin_pass:
         description: 'Web Admin Password'
         required: true
-        default: 'openwrt'
+        default: 'admin'
 
 jobs:
   build:
@@ -27,12 +27,15 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential libncurses5-dev gawk git gettext \
-        subversion mercurial cmake python3-distutils rsync
+        subversion mercurial cmake python3-distutils rsync unzip
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
         
     - name: 🧹 Clean Disk Space
       run: |
         sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
         sudo rm -rf /usr/local/lib/node_modules /usr/lib/node_modules
+        sudo rm -rf /usr/share/swift /usr/local/bin/ /usr/share/rust
         df -h
 
     - name: 📂 Clone OpenWrt Source
@@ -77,8 +80,7 @@ jobs:
         CONFIG_PACKAGE_foomatic-filters=n
         
         # Web界面增强
-        CONFIG_PACKAGE_luci=y
-        CONFIG_PACKAGE_luci-ssl=y
+        CONFIG_PACKAGE_luci-base=y  # 仅安装基础LUCI
         CONFIG_PACKAGE_luci-app-cups=y
         
         # 系统基础组件
@@ -89,7 +91,7 @@ jobs:
         CONFIG_PACKAGE_block-mount=y
         CONFIG_PACKAGE_fdisk=y
         
-        # 禁用冲突包
+        # 禁用冲突包和问题包
         CONFIG_PACKAGE_kmod-usb-storage=n
         CONFIG_PACKAGE_samba4-server=n
         CONFIG_PACKAGE_miniupnpd=n
@@ -97,6 +99,9 @@ jobs:
         CONFIG_PACKAGE_policycoreutils=n
         CONFIG_PACKAGE_lldpd=n
         CONFIG_PACKAGE_kexec-tools=n
+        CONFIG_PACKAGE_python3-pymysql=n  # 显式禁用问题包
+        CONFIG_PACKAGE_luci-app-dockerman=n
+        CONFIG_PACKAGE_luci-app-adblock=n
         EOF
 
     - name: 🖨️ Add Printer Support Files
@@ -136,7 +141,7 @@ jobs:
         *DefaultInputSlot: Auto
         *InputSlot Auto/Automatic: "<</ManualFeed false>>"
         *InputSlot Tray1/Tray 1: "<</MediaPosition 1>>"
-        
+                
         *cupsFilter: "application/vnd.cups-postscript 0 -"
         EOF
         
@@ -237,29 +242,47 @@ jobs:
         ./scripts/feeds update -a
         ./scripts/feeds install -a
         
-        # 安装必要包
+        # 仅安装必要包
         ./scripts/feeds install libcups libusb cups cups-www luci-app-cups
+
+    - name: 🛠️ Fix Recursive Dependencies
+      run: |
+        cd openwrt
+        # 显式禁用问题包
+        echo "CONFIG_PACKAGE_python3-pymysql=n" >> .config
+        echo "CONFIG_PACKAGE_python3-pymysql-sha-password=n" >> .config
+        echo "CONFIG_PACKAGE_python3-pymysql_sha_password_support=n" >> .config
+        
+        # 清理无效配置
+        sed -i '/^CONFIG_PACKAGE_python3-pymysql/d' .config
+        sed -i '/^CONFIG_PYTHON3_PYMYSQL_SHA_PASSWORD_SUPPORT/d' .config
 
     - name: 🔍 Validate Config
       run: |
         cd openwrt
         # 清理无效依赖警告
-        sed -i '/^WARNING:/d' .config
+        sed -i '/^WARNING:/d' .config || true
         
         # 修复格式问题
-        sed -i 's/  #.*//' .config
+        sed -i 's/  #.*//' .config || true
+        
+        # 确保关键配置存在
+        echo "CONFIG_PACKAGE_cups=y" >> .config
+        echo "CONFIG_PACKAGE_cups-www=y" >> .config
+        echo "CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y" >> .config
         
         make defconfig
         
         # 验证关键配置
-        grep "CONFIG_PACKAGE_cups=y" .config || echo "::error::CUPS not enabled"
-        grep "CONFIG_PACKAGE_cups-www=y" .config || echo "::error::CUPS Web not enabled"
-        grep "CONFIG_TARGET_ramips_mt76x8=y" .config || echo "::error::Incorrect target"
+        grep "CONFIG_PACKAGE_cups=y" .config || echo "::error::CUPS not enabled" && exit 1
+        grep "CONFIG_PACKAGE_cups-www=y" .config || echo "::error::CUPS Web not enabled" && exit 1
+        grep "CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y" .config || echo "::error::Device not set to 360p2" && exit 1
         
         # 显示关键配置
         echo "=== Key Configurations ==="
         grep "CONFIG_TARGET" .config | grep -v "=n"
         grep "CONFIG_PACKAGE_cups" .config
+        grep "CONFIG_TARGET_ramips_mt7628_DEVICE" .config
 
     - name: 🛠️ Compile Firmware
       run: |
