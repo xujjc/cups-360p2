@@ -2,6 +2,19 @@ name: 360P2 Printer Firmware Builder
 
 on:
   workflow_dispatch:
+    inputs:
+      printer_ip:
+        description: 'Printer IP Address (e.g., 192.168.1.100)'
+        required: true
+        default: '192.168.1.100'
+      web_admin_user:
+        description: 'Web Admin Username'
+        required: true
+        default: 'admin'
+      web_admin_pass:
+        description: 'Web Admin Password'
+        required: true
+        default: 'openwrt'
 
 jobs:
   build:
@@ -14,16 +27,22 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential libncurses5-dev gawk git gettext \
-        subversion mercurial cmake python3-distutils rsync
-
+        subversion mercurial cmake python3-distutils rsync unzip
+        sudo apt-get clean
+        sudo rm -rf /var/lib/apt/lists/*
+        
     - name: 🧹 Clean Disk Space
       run: |
-        sudo rm -rf /usr/local/lib/android
-        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+        sudo rm -rf /usr/local/lib/node_modules /usr/lib/node_modules
         df -h
 
     - name: 📂 Clone OpenWrt Source
-      run: git clone --depth 1 https://git.openwrt.org/openwrt/openwrt.git
+      run: |
+        git clone --depth 1 https://git.openwrt.org/openwrt/openwrt.git
+        cd openwrt
+        git fetch --tags
+        git checkout v23.05.2  # 使用稳定版本
 
     - name: ⚙️ Configure Firmware
       run: |
@@ -33,7 +52,7 @@ jobs:
         CONFIG_TARGET_ramips=y
         CONFIG_TARGET_ramips_mt76x8=y
         CONFIG_TARGET_ramips_mt7628_DEVICE_360p2=y
-        CONFIG_TARGET_ROOTFS_PARTSIZE=14
+        CONFIG_TARGET_ROOTFS_PARTSIZE=16  # 增加分区大小
         
         # 核心网络功能
         CONFIG_PACKAGE_dnsmasq=y
@@ -41,21 +60,37 @@ jobs:
         CONFIG_PACKAGE_opkg=y
         CONFIG_PACKAGE_wpad-basic-wolfssl=y
         
-        # 打印服务
+        # 打印服务配置
         CONFIG_PACKAGE_cups=y
         CONFIG_PACKAGE_cups-filters=y
-        CONFIG_PACKAGE_avahi-daemon=y
+        CONFIG_PACKAGE_cups-bjnp=y  # 佳能网络打印协议
+        CONFIG_PACKAGE_cups-www=y    # 启用Web界面
+        CONFIG_PACKAGE_kmod-usb-printer=y  # USB打印机支持
+        CONFIG_PACKAGE_libjpeg=y  # 图像处理支持
+        CONFIG_PACKAGE_libpng=y
+        
+        # 禁用不必要组件
+        CONFIG_PACKAGE_cups-ppdc=n
+        CONFIG_PACKAGE_ghostscript=n
+        CONFIG_PACKAGE_gutenprint=n
+        CONFIG_PACKAGE_foomatic-filters=n
+        
+        # Web界面增强
+        CONFIG_PACKAGE_luci=y
+        CONFIG_PACKAGE_luci-ssl=y
         CONFIG_PACKAGE_luci-app-cups=y
         
-        # 最小化系统配置
+        # 系统基础组件
         CONFIG_PACKAGE_luci-theme-bootstrap=y
         CONFIG_PACKAGE_wireless-regdb=y
         CONFIG_PACKAGE_ppp=y
         CONFIG_PACKAGE_ppp-mod-pppoe=y
+        CONFIG_PACKAGE_block-mount=y  # 分区挂载支持
+        CONFIG_PACKAGE_fdisk=y
         
-        # 禁用所有潜在冲突包
+        # 禁用冲突包
         CONFIG_PACKAGE_kmod-usb-storage=n
-        CONFIG_PACKAGE_samba36-server=n
+        CONFIG_PACKAGE_samba4-server=n
         CONFIG_PACKAGE_miniupnpd=n
         CONFIG_PACKAGE_audit=n
         CONFIG_PACKAGE_policycoreutils=n
@@ -63,35 +98,185 @@ jobs:
         CONFIG_PACKAGE_kexec-tools=n
         EOF
 
+    - name: 🖨️ Add Printer Support Files
+      run: |
+        cd openwrt
+        
+        # 创建精简PPD文件
+        mkdir -p files/usr/share/cups/model/
+        cat > files/usr/share/cups/model/canon-mf4452-minimal.ppd << 'EOF'
+        *PPD-Adobe: "4.3"
+        *FormatVersion: "4.3"
+        *FileVersion: "1.0"
+        *LanguageVersion: English
+        *LanguageEncoding: ISOLatin1
+        *PCFileName: "canon-mf4452-minimal.ppd"
+        *Manufacturer: "Canon"
+        *Product: "(Canon MF4452)"
+        *ModelName: "Canon MF4452 Minimal"
+        *ShortNickName: "Canon MF4452"
+        *NickName: "Canon MF4452 Minimal Driver"
+        *PSVersion: "(3010.000) 0"
+        
+        *OpenUI *PageSize/Page Size: PickOne
+        *DefaultPageSize: A4
+        *PageSize Letter/Letter:  "<</PageSize[612 792]>>setpagedevice"
+        *PageSize A4/A4:          "<</PageSize[595 842]>>setpagedevice"
+        
+        *OpenUI *Resolution/Resolution: PickOne
+        *DefaultResolution: 600dpi
+        *Resolution 600dpi/600 DPI:  "<</HWResolution[600 600]>>setpagedevice"
+        
+        *OpenUI *ColorModel/Color Mode: PickOne
+        *DefaultColorModel: Gray
+        *ColorModel Gray/Grayscale: "<</cupsColorSpace 0/cupsColorOrder 0>>"
+        
+        *OpenUI *InputSlot/Paper Source: PickOne
+        *DefaultInputSlot: Auto
+        *InputSlot Auto/Automatic: "<</ManualFeed false>>"
+        *InputSlot Tray1/Tray 1: "<</MediaPosition 1>>"
+        
+        *cupsFilter: "application/vnd.cups-postscript 0 -"
+        EOF
+        
+        # 创建打印机自动配置脚本
+        mkdir -p files/etc/uci-defaults/
+        cat > files/etc/uci-defaults/99-setup-printer << EOF
+        #!/bin/sh
+        
+        # 等待网络就绪
+        sleep 15
+        
+        # 设置打印机
+        lpadmin -p Canon_MF4452 \\
+          -E \\
+          -v "bjnp://${{ github.event.inputs.printer_ip }}" \\
+          -m /usr/share/cups/model/canon-mf4452-minimal.ppd
+        
+        # 设为默认打印机
+        lpoptions -d Canon_MF4452
+        
+        # 创建CUPS管理员账户
+        echo "${{ github.event.inputs.web_admin_user}}:$(openssl passwd -6 '${{ github.event.inputs.web_admin_pass}}')" > /etc/cups/passwd.md5
+        chmod 600 /etc/cups/passwd.md5
+        
+        # 启动服务
+        /etc/init.d/cups enable
+        /etc/init.d/cups start
+        
+        # 配置防火墙允许CUPS访问
+        uci add firewall rule
+        uci set firewall.@rule[-1].name='Allow-CUPS-Web'
+        uci set firewall.@rule[-1].src='lan'
+        uci set firewall.@rule[-1].proto='tcp'
+        uci set firewall.@rule[-1].dest_port='631'
+        uci set firewall.@rule[-1].target='ACCEPT'
+        uci commit firewall
+        
+        # 仅运行一次
+        rm -f /etc/uci-defaults/99-setup-printer
+        exit 0
+        EOF
+        chmod +x files/etc/uci-defaults/99-setup-printer
+        
+        # CUPS Web界面配置
+        mkdir -p files/etc/cups/
+        cat > files/etc/cups/cupsd.conf << EOF
+        LogLevel warn
+        MaxLogSize 0
+        Listen 0.0.0.0:631
+        Browsing On
+        BrowseLocalProtocols dnssd
+        DefaultAuthType Basic
+        
+        # Web管理界面配置
+        WebInterface Yes
+        
+        # 访问控制
+        <Location />
+          Order allow,deny
+          Allow 192.168.0.0/16
+        </Location>
+        
+        <Location /admin>
+          Order allow,deny
+          Allow 192.168.0.0/16
+          AuthType Basic
+          AuthClass System
+          AuthGroupName system
+          Require user @SYSTEM @ADMIN
+        </Location>
+        
+        <Location /admin/conf>
+          AuthType Basic
+          AuthClass System
+          AuthGroupName system
+          Require user @SYSTEM @ADMIN
+          Order allow,deny
+          Allow 192.168.0.0/16
+        </Location>
+        
+        <Policy admin>
+          Require user @SYSTEM @ADMIN
+        </Policy>
+        
+        <Policy default>
+          Require user @OWNER @SYSTEM
+        </Policy>
+        EOF
+        
+        # 创建CUPS管理员组
+        cat > files/etc/cups/cups-files.conf << EOF
+        SystemGroup root
+        EOF
+
     - name: 🔍 Validate Config
       run: |
         cd openwrt
         make defconfig
-        grep CONFIG_PACKAGE_audit .config  # 应返回 =n
+        grep "CONFIG_PACKAGE_cups-www" .config
+        grep "CONFIG_PACKAGE_luci-app-cups" .config
 
     - name: 🔄 Update Feeds
       run: |
         cd openwrt
         ./scripts/feeds update -a
         ./scripts/feeds install -a
+        
+        # 安装必要包
+        ./scripts/feeds install libcups libusb cups cups-www luci-app-cups
 
     - name: 🛠️ Compile Firmware
       run: |
         cd openwrt
-        export MAKEFLAGS="-j1 V=s"
+        export FORCE_UNSAFE_CONFIGURE=1
         make download
-        make
+        make -j$(($(nproc) + 1)) V=s
+        
+        # 检查构建结果
+        if [ ! -d bin/targets/ramips/mt76x8 ]; then
+          echo "::error::Build failed - no output directory found"
+          exit 1
+        fi
 
-    - name: 🔍 Verify Output Path
+    - name: 📦 Package Firmware
       run: |
-        cd openwrt
-        find bin/targets/ramips/mt76x8/ -name "*.bin"
-
-    - name: ✅ Verify Build
-      run: ls -l openwrt/bin/targets/ramips/mt76x8/*.bin
+        cd openwrt/bin/targets/ramips/mt76x8
+        FIRMWARE_FILE=$(ls openwrt-ramips-mt76x8-360-p2-squashfs-sysupgrade.bin)
+        echo "Firmware file: $FIRMWARE_FILE"
+        echo "firmware_name=$FIRMWARE_FILE" >> $GITHUB_ENV
+        
+        # 创建Web访问信息文件
+        LAN_IP=$(grep "ipaddr" ../../../../.config | cut -d'=' -f2 | tr -d '"')
+        echo "CUPS Web Interface: http://$LAN_IP:631" > web-access.txt
+        echo "Username: ${{ github.event.inputs.web_admin_user}}" >> web-access.txt
+        echo "Password: ${{ github.event.inputs.web_admin_pass}}" >> web-access.txt
+        echo "Printer IP: ${{ github.event.inputs.printer_ip}}" >> web-access.txt
 
     - name: 🚀 Upload Firmware
       uses: actions/upload-artifact@v4
       with:
         name: 360P2-Printer-Firmware
-        path: openwrt/bin/targets/ramips/mt76x8/*.bin
+        path: |
+          openwrt/bin/targets/ramips/mt76x8/openwrt-ramips-mt76x8-360-p2-squashfs-sysupgrade.bin
+          openwrt/bin/targets/ramips/mt76x8/web-access.txt
